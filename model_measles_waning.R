@@ -66,7 +66,6 @@ n_age_groups <- length(age_group_labels)
 # Time unit: days throughout (convert annual rates where noted).
 
 params <- list(
-
   n_age_groups = n_age_groups,
 
   # ---- Demography --------------------------------------------------------
@@ -89,20 +88,20 @@ params <- list(
     8.0e-7, # 15-19 yr
     1.5e-6, # 20-29 yr
     5.0e-6, # 30-49 yr
-    3.0e-5  # 50+ yr
+    3.0e-5 # 50+ yr
   ),
 
   # Rate of aging out of each group (per day) = 1 / (width of age class in days)
   # The last group has no aging out (rate = 0).
   aging_rates = c(
-    1 / (1 * 365),   # <1 yr   -> 1-4 yr  (class width: 1 yr)
-    1 / (4 * 365),   # 1-4 yr  -> 5-9 yr  (class width: 4 yr)
-    1 / (5 * 365),   # 5-9 yr  -> 10-14 yr
-    1 / (5 * 365),   # 10-14 yr -> 15-19 yr
-    1 / (5 * 365),   # 15-19 yr -> 20-29 yr
-    1 / (10 * 365),  # 20-29 yr -> 30-49 yr
-    1 / (20 * 365),  # 30-49 yr -> 50+ yr
-    0                # 50+ yr  (open-ended; no aging out)
+    1 / (1 * 365), # <1 yr   -> 1-4 yr  (class width: 1 yr)
+    1 / (4 * 365), # 1-4 yr  -> 5-9 yr  (class width: 4 yr)
+    1 / (5 * 365), # 5-9 yr  -> 10-14 yr
+    1 / (5 * 365), # 10-14 yr -> 15-19 yr
+    1 / (5 * 365), # 15-19 yr -> 20-29 yr
+    1 / (10 * 365), # 20-29 yr -> 30-49 yr
+    1 / (20 * 365), # 30-49 yr -> 50+ yr
+    0 # 50+ yr  (open-ended; no aging out)
   ),
 
   # ---- Disease Natural History -------------------------------------------
@@ -134,18 +133,36 @@ params <- list(
   # These represent the rate at which susceptibles in each age class
   # receive an effective vaccine dose.
   vaccination_rates = c(
-    0,               # <1 yr      (too young for MMR)
-    1 / (1 * 365),   # 1-4 yr     (primary MMR at ~12 months -> ~1-yr class)
-    1 / (10 * 365),  # 5-9 yr     (second dose / catch-up)
-    1 / (20 * 365),  # 10-14 yr
-    1 / (50 * 365),  # 15-19 yr
+    0, # <1 yr      (too young for MMR)
+    1 / (1 * 365), # 1-4 yr     (primary MMR at ~12 months -> ~1-yr class)
+    1 / (10 * 365), # 5-9 yr     (second dose / catch-up)
+    1 / (20 * 365), # 10-14 yr
+    1 / (50 * 365), # 15-19 yr
     1 / (100 * 365), # 20-29 yr
     1 / (200 * 365), # 30-49 yr
-    1 / (500 * 365)  # 50+ yr
+    1 / (500 * 365) # 50+ yr
   ),
 
   # Probability that a vaccine dose successfully confers immunity
   vaccine_efficacy = 0.97,
+
+  # Supplemental vaccination rates (per susceptible per day).
+  # Represents additional campaign-style vaccination on top of routine rates.
+  # Here we target 5-9 yr olds with a realistic low daily rate.
+  supplemental_vaccination_rates = c(
+    0, # <1 yr
+    0, # 1-4 yr
+    1 / (2 * 365), # 5-9 yr
+    0, # 10-14 yr
+    0, # 15-19 yr
+    0, # 20-29 yr
+    0, # 30-49 yr
+    0 # 50+ yr
+  ),
+
+  # Time window (in days) when supplemental vaccination is active.
+  supplemental_start_day = 0,
+  supplemental_end_day = Inf,
 
   # ---- Waning Vaccine Immunity (key parameter) ---------------------------
 
@@ -224,7 +241,6 @@ measles_ode <- function(t, state, params) {
     births_per_day <- birth_rate * total_population
 
     for (i in seq_len(n)) {
-
       # --- Aging flows ---
       # Inflow from younger age group (i-1); none for the youngest group (i=1)
       aging_in_M <- if (i > 1) aging_rates[i - 1] * M[i - 1] else 0
@@ -239,51 +255,61 @@ measles_ode <- function(t, state, params) {
       birth_S <- if (i == 1) (1 - prop_immune_mothers) * births_per_day else 0
 
       # --- Vaccination flow (S -> V) ---
-      vaccinations <- vaccination_rates[i] * vaccine_efficacy * S[i]
+      # Supplemental vaccination can be toggled by setting its rates to zero or
+      # by changing the active time window.
+      supplemental_rate <- if (
+        t >= supplemental_start_day && t <= supplemental_end_day
+      ) {
+        supplemental_vaccination_rates[i]
+      } else {
+        0
+      }
+      total_vaccination_rate <- vaccination_rates[i] + supplemental_rate
+      vaccinations <- vaccine_efficacy * S[i]
 
       # --- ODEs ---
 
       # Maternally immune
       dM[i] <- birth_M +
         aging_in_M -
-        delta * M[i] -         # loss of maternal immunity -> S
+        delta * M[i] - # loss of maternal immunity -> S
         death_rates[i] * M[i] -
         aging_rates[i] * M[i]
 
       # Susceptible
       dS[i] <- birth_S +
         aging_in_S +
-        delta * M[i] +         # from M
-        omega * V[i] -         # waning vaccine immunity -> S (key waning term)
-        lambda[i] * S[i] -     # infection -> E
-        vaccinations -         # vaccination -> V
+        delta * M[i] + # from M
+        omega * V[i] - # waning vaccine immunity -> S (key waning term)
+        lambda[i] * S[i] - # infection -> E
+        vaccinations - # vaccination -> V
         death_rates[i] * S[i] -
         aging_rates[i] * S[i]
 
       # Exposed (latent)
       dE[i] <- aging_in_E +
-        lambda[i] * S[i] -     # new infections from S
-        sigma * E[i] -         # progression -> I
+        lambda[i] * S[i] - # new infections from S
+        sigma * E[i] - # progression -> I
         death_rates[i] * E[i] -
         aging_rates[i] * E[i]
 
       # Infectious
       dI[i] <- aging_in_I +
-        sigma * E[i] -         # progression from E
-        gamma * I[i] -         # recovery -> R
+        sigma * E[i] - # progression from E
+        gamma * I[i] - # recovery -> R
         death_rates[i] * I[i] -
         aging_rates[i] * I[i]
 
       # Recovered (permanently immune via natural infection)
       dR[i] <- aging_in_R +
-        gamma * I[i] -         # recovery from I
+        gamma * I[i] - # recovery from I
         death_rates[i] * R[i] -
         aging_rates[i] * R[i]
 
       # Vaccinated (immune, waning)
       dV[i] <- aging_in_V +
-        vaccinations -         # newly vaccinated from S
-        omega * V[i] -         # waning immunity -> S
+        vaccinations - # newly vaccinated from S
+        omega * V[i] - # waning immunity -> S
         death_rates[i] * V[i] -
         aging_rates[i] * V[i]
     }
@@ -448,10 +474,10 @@ print(p_vax)
 # Compare total measles burden under different vaccine waning assumptions.
 
 waning_scenarios <- list(
-  "No waning (lifelong)"    = 0,
-  "Slow waning (~30 yr)"    = 1 / (30 * 365),
+  "No waning (lifelong)" = 0,
+  "Slow waning (~30 yr)" = 1 / (30 * 365),
   "Moderate waning (~15 yr)" = 1 / (15 * 365),
-  "Fast waning (~10 yr)"    = 1 / (10 * 365)
+  "Fast waning (~10 yr)" = 1 / (10 * 365)
 )
 
 cat("Running waning immunity scenario comparisons...\n")
@@ -502,6 +528,63 @@ p_scenarios <- ggplot(
 print(p_scenarios)
 
 # =============================================================================
+# 8b. Supplemental Vaccination Strategy Comparison
+# =============================================================================
+
+cat("Running supplemental vaccination strategy comparison...\n")
+
+strategy_scenarios <- list(
+  "Routine vaccination only" = c(0, 0, 0, 0, 0, 0, 0, 0),
+  "Routine + supplemental 5-9 yr" = params$supplemental_vaccination_rates
+)
+
+run_strategy_scenario <- function(supp_rates, scenario_name, params, state0, times) {
+  p <- params
+  p$supplemental_vaccination_rates <- supp_rates
+  sol <- ode(
+    y = state0,
+    times = times,
+    func = measles_ode,
+    parms = p,
+    method = "lsoda"
+  )
+  sol_df <- as.data.frame(sol)
+  data.frame(
+    time_years = sol_df$time / 365,
+    total_I = rowSums(sol_df[, grep("^I_", names(sol_df))]),
+    scenario = scenario_name,
+    stringsAsFactors = FALSE
+  )
+}
+
+strategy_df <- bind_rows(
+  mapply(
+    run_strategy_scenario,
+    supp_rates = strategy_scenarios,
+    scenario_name = names(strategy_scenarios),
+    MoreArgs = list(params = params, state0 = state0, times = times),
+    SIMPLIFY = FALSE
+  )
+)
+
+p_strategy <- ggplot(
+  strategy_df,
+  aes(x = time_years, y = total_I, color = scenario)
+) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Effect of Supplemental Vaccination in 5-9 yr Age Group",
+    subtitle = "Additional daily vaccination layered on top of routine schedule",
+    x = "Time (years)",
+    y = "Total Infectious",
+    color = "Vaccination strategy"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+print(p_strategy)
+
+# =============================================================================
 # 9. Summary Statistics
 # =============================================================================
 
@@ -521,3 +604,14 @@ scenario_peaks <- scenario_df |>
 
 cat("\n--- Peak infectious by waning scenario ---\n")
 print(scenario_peaks)
+
+strategy_peaks <- strategy_df |>
+  group_by(scenario) |>
+  summarise(
+    peak_I = max(total_I),
+    time_to_peak_yr = time_years[which.max(total_I)],
+    .groups = "drop"
+  )
+
+cat("\n--- Peak infectious by supplemental vaccination strategy ---\n")
+print(strategy_peaks)
